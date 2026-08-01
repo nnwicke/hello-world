@@ -302,6 +302,58 @@
   .small-checkers .checker { width: 8px; height: 8px; margin: 0; border-width: 0.5px; box-shadow: none; }
   .small-checkers .checker::after { display: none; }
 
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.72);
+    z-index: 10000;
+    padding: 20px;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal-card {
+    background: linear-gradient(160deg, #1c1c1e, #0f0a07);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 20px;
+    padding: 28px 24px;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    max-width: 320px;
+    width: 100%;
+    animation: popIn 0.4s cubic-bezier(.34,1.56,.64,1);
+  }
+  @keyframes popIn { from { transform: scale(0.7); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  .modal-card .trophy { font-size: 56px; margin-bottom: 8px; line-height: 1; }
+  .modal-card h2 { margin: 0 0 6px; font-size: 22px; color: #fff; }
+  .modal-card p { margin: 0 0 18px; color: #a1a1aa; font-size: 13px; }
+  .modal-buttons { display: flex; gap: 8px; margin-bottom: 12px; height: 48px; }
+  .modal-buttons button { height: 100%; font-size: 15px; }
+  .modal-cancel { background: transparent; color: #8e8e93; font-size: 13px; padding: 4px; height: 20px; }
+
+  .confetti-container {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+    z-index: 10001;
+  }
+  .confetti-piece {
+    position: absolute;
+    top: -12px;
+    width: 8px;
+    height: 14px;
+    opacity: 0.95;
+    animation-name: confettiFall;
+    animation-timing-function: ease-in;
+    animation-fill-mode: forwards;
+  }
+  @keyframes confettiFall {
+    0% { transform: translateY(0) translateX(0) rotate(0deg); opacity: 1; }
+    100% { transform: translateY(112vh) translateX(var(--drift)) rotate(var(--rot)); opacity: 0.25; }
+  }
+
   @media (min-width: 600px) {
     html, body { background: #1c1c1e; }
     .app { max-width: 480px; margin: 0 auto; height: 100vh; height: 100dvh; padding: 20px; gap: 12px; }
@@ -355,13 +407,35 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="difficultyOverlay">
+  <div class="modal-card">
+    <h2>New Game</h2>
+    <p>Choose a difficulty for the Red AI opponent.</p>
+    <div class="modal-buttons">
+      <button class="primary" id="easyBtn">Easy</button>
+      <button class="primary" id="hardBtn">Hard</button>
+    </div>
+    <button class="modal-cancel" id="difficultyCancelBtn">Cancel</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="celebrateOverlay">
+  <div class="modal-card">
+    <div class="trophy">🏆</div>
+    <h2>You Win!</h2>
+    <p>White has borne off all 15 checkers. Great game!</p>
+    <button class="primary" id="celebratePlayAgainBtn">Play Again</button>
+  </div>
+</div>
+<div class="confetti-container" id="confettiContainer"></div>
+
 <script>
 const faces = ["", "⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
 const storageKey = "backgammon-lux-v3";
 let state;
 let selectedFrom = null;
 
-function newGame() {
+function newGame(difficulty) {
   const board = Array(25).fill(0);
   board[1] = 2;
   board[6] = -5;
@@ -380,7 +454,9 @@ function newGame() {
     rolled: false,
     message: "White to roll.",
     lastAiMove: "No AI move yet.",
-    aiRolled: null
+    aiRolled: null,
+    difficulty: difficulty || "easy",
+    winner: null
   };
 }
 
@@ -395,6 +471,8 @@ function load() {
       state = saved;
       state.lastAiMove ||= "No AI move yet.";
       state.aiRolled ||= null;
+      state.difficulty ||= "easy";
+      if (state.winner === undefined) state.winner = null;
       return;
     }
   } catch (_) {}
@@ -599,13 +677,17 @@ function hasLegalMoves(player) {
 }
 
 function endTurnIfNeeded() {
+  if (state.winner) return;
   if (state.off["1"] >= 15) {
+    state.winner = 1;
     state.message = "White wins! 🎉";
     state.dice = [];
     state.rolled = false;
+    setTimeout(celebrateWin, 300);
     return;
   }
   if (state.off["-1"] >= 15) {
+    state.winner = -1;
     state.message = "Red wins! 🎉";
     state.dice = [];
     state.rolled = false;
@@ -625,7 +707,7 @@ function endTurnIfNeeded() {
 }
 
 function roll() {
-  if (state.rolled) return;
+  if (state.rolled || state.winner) return;
   const d1 = 1 + Math.floor(Math.random() * 6);
   const d2 = 1 + Math.floor(Math.random() * 6);
   state.dice = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
@@ -643,6 +725,7 @@ function roll() {
 }
 
 function move(from, to) {
+  if (state.winner) return;
   const [ok, die, error] = validateMove(1, from, to);
   selectedFrom = null;
   if (!ok) {
@@ -656,8 +739,156 @@ function move(from, to) {
   render();
 }
 
+function shotCount(board, point) {
+  let shots = 0;
+  for (let d = 1; d <= 6; d++) {
+    const src = point - d;
+    if (src >= 1 && board[src] > 0) shots += 1;
+  }
+  for (let d = 7; d <= 11; d++) {
+    const src = point - d;
+    if (src >= 1 && board[src] > 0) shots += 0.5;
+  }
+  return shots;
+}
+
+function evalPositionForAI(pos) {
+  let score = 0;
+  score += pos.off["-1"] * 500;
+  score += pos.bar["1"] * 150;
+  score -= pos.bar["-1"] * 120;
+  for (let p = 1; p <= 24; p++) {
+    const v = pos.board[p];
+    if (v < 0) {
+      const n = -v;
+      if (n === 1) {
+        score -= shotCount(pos.board, p) * 6;
+      } else {
+        score += 4;
+      }
+      score -= p * n * 0.3;
+    }
+  }
+  return score;
+}
+
+function simulateAiMove(from, to) {
+  const board = state.board.slice();
+  const bar = { ...state.bar };
+  const off = { ...state.off };
+  const player = -1;
+  if (from === "bar") bar["-1"] -= 1; else board[Number(from)] -= player;
+  if (to === "off") {
+    off["-1"] += 1;
+  } else {
+    const target = Number(to);
+    if (board[target] === -player) {
+      board[target] = player;
+      bar["1"] += 1;
+    } else {
+      board[target] += player;
+    }
+  }
+  return { board, bar, off };
+}
+
+function generateAiCandidates(dice) {
+  const candidates = [];
+  if (state.bar["-1"] > 0) {
+    for (const die of dice) {
+      const target = 25 - die;
+      if (isValidTarget(-1, target)) candidates.push({ from: "bar", to: String(target), die });
+    }
+    return candidates;
+  }
+  const seen = new Set();
+  if (canBearOff(-1)) {
+    for (let start = 1; start <= 6; start++) {
+      if (!ownsPoint(-1, start)) continue;
+      const die = legalBearOffDie(-1, start);
+      if (die !== null) {
+        const key = start + ":off:" + die;
+        if (!seen.has(key)) { seen.add(key); candidates.push({ from: String(start), to: "off", die }); }
+      }
+    }
+  }
+  for (let start = 1; start <= 24; start++) {
+    if (!ownsPoint(-1, start)) continue;
+    for (const die of dice) {
+      const target = start - die;
+      if (target >= 1 && isValidTarget(-1, target)) {
+        const key = start + ":" + target + ":" + die;
+        if (!seen.has(key)) { seen.add(key); candidates.push({ from: String(start), to: String(target), die }); }
+      }
+    }
+  }
+  return candidates;
+}
+
+function pickBestAiMove(dice) {
+  const candidates = generateAiCandidates(dice);
+  if (!candidates.length) return null;
+  let best = null, bestScore = -Infinity;
+  for (const c of candidates) {
+    const pos = simulateAiMove(c.from, c.to);
+    const s = evalPositionForAI(pos);
+    if (s > bestScore) { bestScore = s; best = c; }
+  }
+  return best;
+}
+
+function pickNaiveAiMove(dice) {
+  if (state.bar["-1"] > 0) {
+    for (const die of dice) {
+      const target = 25 - die;
+      if (isValidTarget(-1, target)) return { from: "bar", to: String(target), die };
+    }
+    return null;
+  }
+  if (canBearOff(-1)) {
+    for (let start = 1; start <= 6; start++) {
+      if (!ownsPoint(-1, start)) continue;
+      const die = legalBearOffDie(-1, start);
+      if (die !== null) return { from: String(start), to: "off", die };
+    }
+  }
+  for (let start = 24; start >= 1; start--) {
+    if (!ownsPoint(-1, start)) continue;
+    for (const die of dice) {
+      const target = start - die;
+      if (target >= 1 && isValidTarget(-1, target)) return { from: String(start), to: String(target), die };
+    }
+  }
+  return null;
+}
+
+function celebrateWin() {
+  const overlay = document.getElementById("celebrateOverlay");
+  overlay.classList.add("show");
+  spawnConfetti();
+}
+
+function spawnConfetti() {
+  const container = document.getElementById("confettiContainer");
+  container.innerHTML = "";
+  const colors = ["#ff453a", "#ff9500", "#ffd60a", "#30d158", "#64d2ff", "#007af5", "#bf5af2"];
+  const pieceCount = 120;
+  for (let i = 0; i < pieceCount; i++) {
+    const piece = document.createElement("div");
+    piece.className = "confetti-piece";
+    piece.style.left = Math.random() * 100 + "%";
+    piece.style.background = colors[Math.floor(Math.random() * colors.length)];
+    piece.style.animationDelay = (Math.random() * 0.6) + "s";
+    piece.style.animationDuration = (2.2 + Math.random() * 1.6) + "s";
+    piece.style.setProperty("--drift", (Math.random() * 160 - 80) + "px");
+    piece.style.setProperty("--rot", (Math.random() * 720 - 360) + "deg");
+    container.appendChild(piece);
+  }
+  setTimeout(() => { container.innerHTML = ""; }, 4200);
+}
+
 function aiTurn() {
-  if (state.turn !== -1) return;
+  if (state.turn !== -1 || state.winner) return;
   if (!state.rolled) {
     const d1 = 1 + Math.floor(Math.random() * 6);
     const d2 = 1 + Math.floor(Math.random() * 6);
@@ -676,49 +907,16 @@ function aiTurn() {
     }
   }
 
+  const hard = state.difficulty === "hard";
   const aiMoves = [];
   let safety = 0;
   while (state.turn === -1 && state.dice.length && hasLegalMoves(-1) && safety++ < 20) {
-    let moved = false;
     const dice = [...new Set(state.dice)].sort((a, b) => b - a);
-    if (state.bar["-1"] > 0) {
-      for (const die of dice) {
-        const target = 25 - die;
-        if (isValidTarget(-1, target)) {
-          aiMoves.push(executeMove(-1, "bar", String(target), die));
-          moved = true;
-          break;
-        }
-      }
-    } else {
-      let bearOffMoved = false;
-      if (canBearOff(-1)) {
-        for (let start = 1; start <= 6 && !bearOffMoved; start++) {
-          if (!ownsPoint(-1, start)) continue;
-          const die = legalBearOffDie(-1, start);
-          if (die !== null) {
-            aiMoves.push(executeMove(-1, String(start), "off", die));
-            bearOffMoved = true;
-            moved = true;
-          }
-        }
-      }
-      if (!bearOffMoved) {
-        for (let start = 24; start >= 1 && !moved; start--) {
-          if (!ownsPoint(-1, start)) continue;
-          for (const die of dice) {
-            const target = start - die;
-            if (target >= 1 && isValidTarget(-1, target)) {
-              aiMoves.push(executeMove(-1, String(start), String(target), die));
-              moved = true;
-              break;
-            }
-          }
-        }
-      }
-    }
-    if (!moved) break;
+    const chosen = hard ? pickBestAiMove(dice) : pickNaiveAiMove(dice);
+    if (!chosen) break;
+    aiMoves.push(executeMove(-1, chosen.from, chosen.to, chosen.die));
     if (state.off["-1"] >= 15) {
+      state.winner = -1;
       state.message = "Red wins! 🎉";
       state.dice = [];
       state.rolled = false;
@@ -790,7 +988,7 @@ function render() {
   document.getElementById("whiteOff").classList.toggle("legal-move", legalTargetsFor(selectedFrom).includes("off"));
   const redDiceHtml = state.aiRolled ? `<span style="font-size:16px;margin-left:4px">${faces[state.aiRolled[0]]} ${faces[state.aiRolled[1]]}</span>` : "";
   document.getElementById("aiLog").innerHTML = `<b>Last AI move</b>${state.lastAiMove || "No AI move yet."}${redDiceHtml}`;
-  document.getElementById("rollBtn").disabled = state.rolled || state.turn !== 1;
+  document.getElementById("rollBtn").disabled = state.rolled || state.turn !== 1 || !!state.winner;
 }
 
 const boardEl = document.querySelector(".board");
@@ -921,13 +1119,30 @@ boardEl.addEventListener("touchend", ev => {
   touchDragFrom = null;
 }, { passive: true });
 
-document.getElementById("rollBtn").addEventListener("click", roll);
-document.getElementById("resetBtn").addEventListener("click", () => {
-  state = newGame();
+function showDifficultyModal() {
+  document.getElementById("celebrateOverlay").classList.remove("show");
+  document.getElementById("confettiContainer").innerHTML = "";
+  document.getElementById("difficultyOverlay").classList.add("show");
+}
+
+function startNewGame(difficulty) {
+  document.getElementById("difficultyOverlay").classList.remove("show");
+  document.getElementById("celebrateOverlay").classList.remove("show");
+  document.getElementById("confettiContainer").innerHTML = "";
+  state = newGame(difficulty);
   selectedFrom = null;
   save();
   render();
+}
+
+document.getElementById("rollBtn").addEventListener("click", roll);
+document.getElementById("resetBtn").addEventListener("click", showDifficultyModal);
+document.getElementById("easyBtn").addEventListener("click", () => startNewGame("easy"));
+document.getElementById("hardBtn").addEventListener("click", () => startNewGame("hard"));
+document.getElementById("difficultyCancelBtn").addEventListener("click", () => {
+  document.getElementById("difficultyOverlay").classList.remove("show");
 });
+document.getElementById("celebratePlayAgainBtn").addEventListener("click", showDifficultyModal);
 
 load();
 render();
